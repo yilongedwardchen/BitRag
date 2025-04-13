@@ -59,6 +59,7 @@ News Sites                        │         Combined                    System
    ```bash
    cp env.example.txt .env
    ```
+   The file will be a hidden one under current directory, use `ls -a` for checking.
 
 3. Add your HuggingFace API token to the `.env` file:
    ```
