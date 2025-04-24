@@ -1,7 +1,5 @@
 # BitRag
 
-![BitRag Logo](path/to/logo.png) <!-- Replace with actual logo path if available -->
-
 **BitRag** is an innovative, open-source Bitcoin price analysis system that harnesses the power of **Retrieval-Augmented Generation (RAG)** with the cutting-edge **DeepSeek V3** model. Designed to deliver real-time insights into Bitcoin market trends, BitRag collects, processes, and analyzes a wealth of data—including price, trading volume, whale transactions, and news—making it an essential tool for cryptocurrency enthusiasts, traders, and developers alike. With a robust, scalable architecture built on modern technologies like Kafka, Pathway, PostgreSQL, Milvus, and LangChain, BitRag is fully containerized using Docker for seamless deployment and operation.
 
 ---
