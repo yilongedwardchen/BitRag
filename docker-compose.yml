@@ -1,0 +1,321 @@
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.3.0
+    container_name: bitrag-zookeeper
+    ports:
+      - "2181:2181"
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 6000
+      ZOOKEEPER_INIT_LIMIT: 10
+      ZOOKEEPER_SYNC_LIMIT: 5
+    volumes:
+      - zookeeper_data:/var/lib/zookeeper/data
+      - zookeeper_log:/var/lib/zookeeper/log
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "echo", "ruok", "|", "nc", "-z", "localhost", "2181"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  kafka:
+    image: confluentinc/cp-kafka:7.3.0
+    container_name: bitrag-kafka
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_ZOOKEEPER_SESSION_TIMEOUT_MS: 60000
+      KAFKA_LOG4J_LOGGERS: "kafka.controller=DEBUG,kafka.producer.async.DefaultEventHandler=DEBUG,state.change.logger=DEBUG"
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z kafka 9092 || exit 1"]
+      interval: 45s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+
+  postgres:
+    image: postgres:15
+    container_name: bitrag-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: bitrag
+      POSTGRES_PASSWORD: bitragpassword
+      POSTGRES_DB: bitrag_db
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "bitrag"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.0
+    container_name: bitrag-etcd
+    environment:
+      - ETCD_AUTO_COMPACTION_MODE=revision
+      - ETCD_AUTO_COMPACTION_RETENTION=1000
+      - ETCD_QUOTA_BACKEND_BYTES=4294967296
+      - ETCD_SNAPSHOT_COUNT=50000
+    volumes:
+      - etcd_data:/etcd
+    command: etcd -advertise-client-urls=http://etcd:2379 -listen-client-urls=http://0.0.0.0:2379 --data-dir=/etcd
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "etcdctl", "--endpoints=http://localhost:2379", "endpoint", "health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  minio:
+    image: minio/minio:RELEASE.2023-03-20T20-16-18Z
+    container_name: bitrag-minio
+    environment:
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+    volumes:
+      - minio_data:/minio_data
+    command: minio server /minio_data
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  milvus:
+    image: milvusdb/milvus:v2.3.0
+    container_name: bitrag-milvus
+    ports:
+      - "19530:19530"
+      - "9091:9091"
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+    volumes:
+      - milvus_data:/var/lib/milvus
+    command: ["milvus", "run", "standalone"]
+    depends_on:
+      etcd:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: bitrag-kafka-ui
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+      KAFKA_CLUSTERS_0_ZOOKEEPER: zookeeper:2181
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+    restart: unless-stopped
+
+  adminer:
+    image: adminer
+    container_name: bitrag-adminer
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8081:8080"
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+    restart: unless-stopped
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: bitrag-app
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      milvus:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PG_HOST=postgres
+      - PG_PORT=5432
+      - PG_USER=bitrag
+      - PG_PASS=bitragpassword
+      - PG_DB=bitrag_db
+      - MILVUS_HOST=milvus
+      - MILVUS_PORT=19530
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - CRYPTOCOMPARE_API_KEY=${CRYPTOCOMPARE_API_KEY}
+    volumes:
+      - ./src:/app/src
+      - ./data:/app/data
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+    restart: unless-stopped
+    command: bash -c "python /app/src/utils/init_docker.py && python /app/src/database/setup_postgres.py --import && python /app/src/kafka/setup_kafka_topics.py && python /app/src/rag/api.py"
+
+  collector:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: bitrag-collector
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PG_HOST=postgres
+      - PG_PORT=5432
+      - PG_USER=bitrag
+      - PG_PASS=bitragpassword
+      - PG_DB=bitrag_db
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - CRYPTOCOMPARE_API_KEY=${CRYPTOCOMPARE_API_KEY}
+    volumes:
+      - ./src:/app/src
+      - ./data:/app/data
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+    restart: unless-stopped
+    command: python /app/src/data_collection/collect_historical_data.py
+
+  kafka-producer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: bitrag-kafka-producer
+    depends_on:
+      kafka:
+        condition: service_healthy
+      collector:
+        condition: service_started
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PG_HOST=postgres
+      - PG_PORT=5432
+      - PG_USER=bitrag
+      - PG_PASS=bitragpassword
+      - PG_DB=bitrag_db
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - CRYPTOCOMPARE_API_KEY=${CRYPTOCOMPARE_API_KEY}
+    volumes:
+      - ./src:/app/src
+      - ./data:/app/data
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+    restart: unless-stopped
+    command: python /app/src/kafka/kafka_producers.py
+
+  processor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: bitrag-processor
+    depends_on:
+      postgres:
+        condition: service_healthy
+      milvus:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      kafka-producer:
+        condition: service_started
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PG_HOST=postgres
+      - PG_PORT=5432
+      - PG_USER=bitrag
+      - PG_PASS=bitragpassword
+      - PG_DB=bitrag_db
+      - MILVUS_HOST=milvus
+      - MILVUS_PORT=19530
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - CRYPTOCOMPARE_API_KEY=${CRYPTOCOMPARE_API_KEY}
+    volumes:
+      - ./src:/app/src
+      - ./data:/app/data
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+    restart: unless-stopped
+    command: python /app/src/pathway/data_processor.py
+
+volumes:
+  postgres_data:
+  etcd_data:
+  minio_data:
+  zookeeper_data:
+  zookeeper_log:
+  kafka_data:
+  milvus_data:
